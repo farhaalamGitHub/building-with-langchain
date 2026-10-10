@@ -82,3 +82,71 @@ uv run python scripts/try_study_helper.py "What is an API?"
 ```
 
 Expected: a short plain explanation, a small example, and one final line starting `Next step:`. Requires `GROK_API_KEY` and `GROK_MODEL_NAME` in `.env`; without them it prints a configuration error.
+
+## Story 3.2 — Visible Python routing between the two chains
+
+**What it adds:** the same chat endpoint now sends a message that starts with `/study` to the study helper and everything else to general chat; the reply starts with a `[route: general]` or `[route: study]` label. (The rule now lives in the Story 4.1 graph router.)
+
+```bash
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"YOUR_MODEL","messages":[{"role":"user","content":"Hello!"}],"stream":false}'
+
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"YOUR_MODEL","messages":[{"role":"user","content":"/study Explain what an API is"}],"stream":false}'
+```
+
+Expected: both are `chat.completion` JSON. The first content starts with `[route: general]` and is a friendly reply. The second starts with `[route: study]`, explains an API (not the literal `/study`), and ends with one `Next step:` line.
+
+```bash
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"YOUR_MODEL","messages":[{"role":"user","content":"/study"}],"stream":false}'
+```
+
+Expected: HTTP 200 with `[route: study]` and the hint "Add a question after /study, for example: /study What is an API?" (no model answer). A message like `/studying` is not matched and goes to general chat.
+
+## Story 4.1 — LangGraph routing workflow
+
+**What it adds:** the route is now a small LangGraph (`router` → `general_chat` or `study_helper` → `END`); the endpoint and response shapes are unchanged.
+
+Prerequisite: run the app with `APP_ENV=development` and watch the server log for the trace line.
+
+```bash
+curl -N http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"YOUR_MODEL","messages":[{"role":"user","content":"/study Explain what an API is"}],"stream":true}'
+
+curl -N http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"YOUR_MODEL","messages":[{"role":"user","content":"Hello!"}],"stream":true}'
+```
+
+Expected: `chat.completion.chunk` events starting with the route label, a `"finish_reason":"stop"` chunk, then `data: [DONE]`. The server log shows a `route: study | ... | nodes: router -> study_helper -> ...` line, then a `route: general | ...` line (Story 4.2 added the review fields to that line). Setting `LOG_LLM_PAYLOADS=true` also prints REQUEST, SENT TO MODEL and RESPONSE blocks in the server terminal.
+
+## Story 4.2 — Bounded answer review and improvement
+
+**What it adds:** each draft answer is checked once by a reviewer; if it says `improve`, an improver rewrites it once, then the answer is final. Open WebUI still shows only the final answer.
+
+Prerequisite: run the app with `APP_ENV=development` and watch the server log for the trace line.
+
+```bash
+curl http://127.0.0.1:8000/v1/chat/completions   -H "Content-Type: application/json"   -d '{"model":"YOUR_MODEL","messages":[{"role":"user","content":"Hello!"}],"stream":false}'
+
+curl http://127.0.0.1:8000/v1/chat/completions   -H "Content-Type: application/json"   -d '{"model":"YOUR_MODEL","messages":[{"role":"user","content":"/study Explain variables, loops, functions and classes"}],"stream":false}'
+```
+
+Expected: both are `chat.completion` JSON starting with `[route: general]` and `[route: study]`. The log shows `route: general | review: approve | revisions: 0 | nodes: router -> general_chat -> reviewer` for the first. For the second it shows either the same shape with `study_helper`, or, if the reviewer asks for a rewrite, `review: improve -> approve | revisions: 1 | nodes: router -> study_helper -> reviewer -> improver -> reviewer`. The reviewer is a model, so which one you get can vary. `revisions` is never above 1.
+
+```bash
+curl http://127.0.0.1:8000/v1/chat/completions   -H "Content-Type: application/json"   -d '{"model":"YOUR_MODEL","messages":[{"role":"user","content":"/study"}],"stream":false}'
+```
+
+Expected: HTTP 200 with the `/study` hint and no review (`nodes: router`, no reviewer).
+
+```bash
+curl -N http://127.0.0.1:8000/v1/chat/completions   -H "Content-Type: application/json"   -d '{"model":"YOUR_MODEL","messages":[{"role":"user","content":"Hello!"}],"stream":true}'
+```
+
+Expected: `chat.completion.chunk` events that arrive together after the review finishes (not word by word), a `"finish_reason":"stop"` chunk, and `data: [DONE]`.

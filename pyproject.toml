@@ -10,6 +10,7 @@ dependencies = [
     "pydantic-settings",
     "langchain",
     "langchain-xai",
+    "langgraph>=1.2.14",
 ]
 
 [dependency-groups]

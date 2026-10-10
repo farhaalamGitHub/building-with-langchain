@@ -1,8 +1,16 @@
+from typing import Literal
+
 from langchain_core.output_parsers import StrOutputParser
 from langchain_xai import ChatXAI
+from pydantic import BaseModel, Field
 
 from learning_companion.debug import PayloadPrinter
-from learning_companion.prompt import PROMPT, STUDY_HELPER_PROMPT
+from learning_companion.prompt import (
+    IMPROVER_PROMPT,
+    PROMPT,
+    REVIEW_PROMPT,
+    STUDY_HELPER_PROMPT,
+)
 from learning_companion.settings import Settings
 
 
@@ -42,3 +50,18 @@ def build_chain(settings: Settings):
 def build_study_helper_chain(settings: Settings):
     """Study helper: study prompt -> same Grok chat model -> text output."""
     return STUDY_HELPER_PROMPT | _build_model(settings) | StrOutputParser()
+
+
+class ReviewDecision(BaseModel):
+    decision: Literal["approve", "improve"]
+    reason: str = Field(description="One short plain-English reason.")
+
+
+def build_reviewer_chain(settings: Settings):
+    """Reviewer: review prompt -> same Grok model -> structured approve/improve decision."""
+    return REVIEW_PROMPT | _build_model(settings).with_structured_output(ReviewDecision)
+
+
+def build_improver_chain(settings: Settings):
+    """Improver: improver prompt -> same Grok model -> rewritten answer text."""
+    return IMPROVER_PROMPT | _build_model(settings) | StrOutputParser()
